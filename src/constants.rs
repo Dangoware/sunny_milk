@@ -1,0 +1,157 @@
+//! Read more about the meanings of the below bytes here:
+//! <https://docs.kernel.org/userspace-api/ioctl/cdrom.html>
+
+use num_traits::ToPrimitive;
+
+/// CDROM ioctl byte, from <linux/cdrom.h>
+pub const IOC_BYTE: u8 = 0x53;
+
+#[repr(u8)]
+#[derive(FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy)]
+pub enum Operations {
+    /// Pause Audio Operation
+    Pause = 0x01,
+    /// Resume paused Audio Operation
+    Resume = 0x02,
+    /// Play Audio MSF (struct cdrom_msf)
+    PlayMsf = 0x03,
+    /// Play Audio Track/index (struct cdrom_ti)
+    PlayTrackIndex = 0x04,
+    /// Read TOC header (struct cdrom_tochdr)
+    ReadTocHeader = 0x05,
+    /// Read TOC entry (struct cdrom_tocentry)
+    ReadTocEntry = 0x06,
+    /// Stop the cdrom drive
+    Stop = 0x07,
+    /// Start the cdrom drive
+    Start = 0x08,
+    /// Ejects the cdrom media
+    Eject = 0x09,
+    /// Control output volume (struct cdrom_volctrl)
+    VolumeControl = 0x0a,
+    /// Read subchannel data (struct cdrom_subchnl)
+    SubChannel = 0x0b,
+    /// Read CDROM mode 2 data (2336 Bytes) (struct cdrom_subchnl)
+    ReadMode2 = 0x0c,
+    /// Read CDROM mode 1 data (2048 Bytes) (struct cdrom_read)
+    ReadMode1 = 0x0d,
+    /// (struct cdrom_read_audio)
+    ReadAudio = 0x0e,
+    /// Enable (1)/Disable (0) auto-ejecting
+    EjectSoftware = 0x0f,
+    /// Obtain the start-of-last-session address of multi session disks (struct cdrom_multisession)
+    MultiSession = 0x10,
+    /// Obtain the "Universal Product Code" if available (struct cdrom_mcn)
+    GetMcn = 0x11,
+    /// Hard-reset the drive
+    Reset = 0x12,
+    /// Get the drive's volume setting (struct cdrom_volctrl)
+    VolumeRead = 0x13,
+    /// Read data in raw mode (2352 Bytes) (struct cdrom_read)
+    ReadRaw = 0x14,
+
+
+    // These ioctls are only used in aztcd.c and optcd.c
+
+    /// Read data in cooked mode (???)
+    ReadCooked = 0x15,
+    /// Seek msf address
+    Seek = 0x16,
+
+
+    // This ioctl is only used by the scsi-cd driver.
+    // It is for playing audio in logtal block addresing mode.
+
+    /// (struct cdrom_blk)
+    PlayBlock = 0x17,
+
+
+    // These ioctls are only used in optcd.c
+
+    /// Read all 2646 bytes
+    ReadAll = 0x18,
+
+
+    // These ioctls were only in (now removed) ide-cd.c for controlling
+    // drive spindown time.  They should be implemented in the
+    // Uniform driver, via generic packet commands, GPCMD_MODE_SELECT_10,
+    // GPCMD_MODE_SENSE_10 and the GPMODE_POWER_PAGE...
+    // -Erik
+    GetSpindown = 0x1d,
+    SetSpindown = 0x1e,
+
+    // These ioctls are implemented through the uniform CD-ROM driver
+    // They _will_ be adopted by all CD-ROM drivers, when all the CD-ROM
+    // drivers are eventually ported to the uniform CD-ROM driver interface.
+
+    /// Pendant of [`Operations::Eject`]
+    CloseTray = 0x19,
+    /// Set behavior options
+    SetOptions = 0x20,
+    /// Clear behavior options
+    ClearOptions = 0x21,
+    /// Set the CD-ROM speed
+    SelectSpeed = 0x22,
+    /// Select disc (for juke-boxes)
+    SelectDisk = 0x23,
+    /// Check is media changed
+    MediaChanged = 0x25,
+    /// Get tray position, etc
+    DriveStatus = 0x26,
+    /// Get disc type, etc
+    DiscStatus = 0x27,
+    /// Get number of slots
+    ChangerNslots = 0x28,
+    /// Lock or unlock door
+    LockDoor = 0x29,
+    /// Turn debug messages on/off
+    Debug = 0x30,
+    /// Get capabilities
+    GetCapability = 0x31,
+
+    // Note that scsi/scsi_ioctl.h also uses 0x5382 - 0x5386.
+    // Future CDROM ioctls should be kept below 0x537F
+
+    /// Set the audio buffer size
+    /// conflict with SCSI_IOCTL_GET_IDLUN
+    AudioBufferSize = 0x82,
+
+    // DVD-ROM Specific ioctls
+
+    /// Read structure
+    DvdReadStructure = 0x90,
+    /// Write structure
+    DvdWriteStructure = 0x91,
+    /// Authentication
+    DvdAuthenticate = 0x92,
+
+    /// Send a packet to the drive
+    SendPacket = 0x93,
+    /// Get next writable block
+    NextWritable = 0x94,
+    /// Get last block written on disc
+    LastWritten = 0x95,
+    /// Get the timestamp of the last media change
+    TimedMediaChange = 0x96,
+}
+
+impl Operations {
+    /// Turns the byte into its full IOCTL representation
+    pub fn to_full(&self) -> u64 {
+        let value = self.to_u8().unwrap();
+
+        ((IOC_BYTE as u64) << 8) + value as u64
+    }
+}
+
+/// Drive status possibilities returned by CDROM_DRIVE_STATUS ioctl
+#[derive(FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy)]
+pub enum Status {
+    NoInfo = 0,
+    NoDisc = 1,
+    TrayOpen = 2,
+    DriveNotReady = 3,
+    DiscOK = 4
+}
