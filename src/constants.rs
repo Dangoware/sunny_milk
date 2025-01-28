@@ -3,13 +3,15 @@
 
 use num_traits::ToPrimitive;
 
+pub const EDRIVE_CANT_DO_THIS: i32 = nix::errno::Errno::EOPNOTSUPP as i32;
+
 /// CDROM ioctl byte, from <linux/cdrom.h>
 pub const IOC_BYTE: u8 = 0x53;
 
 #[repr(u8)]
 #[derive(FromPrimitive, ToPrimitive)]
-#[derive(Debug, Clone, Copy)]
-pub enum Operations {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
     /// Pause Audio Operation
     Pause = 0x01,
     /// Resume paused Audio Operation
@@ -136,22 +138,105 @@ pub enum Operations {
     TimedMediaChange = 0x96,
 }
 
-impl Operations {
-    /// Turns the byte into its full IOCTL representation
-    pub fn to_full(&self) -> u64 {
-        let value = self.to_u8().unwrap();
+/// Turns the byte into its full IOCTL representation
+pub fn op_to_ioctl(op: Operation) -> u64 {
+    let value = op.to_u8().unwrap();
 
-        ((IOC_BYTE as u64) << 8) + value as u64
-    }
+    ((IOC_BYTE as u64) << 8) + value as u64
 }
 
 /// Drive status possibilities returned by CDROM_DRIVE_STATUS ioctl
 #[derive(FromPrimitive, ToPrimitive)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     NoInfo = 0,
     NoDisc = 1,
     TrayOpen = 2,
     DriveNotReady = 3,
     DiscOK = 4
+}
+
+/// Disc status possibilities returned by CDROM_DISC_STATUS ioctl
+#[derive(FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscStatus {
+    NoInfo = 0,
+    Audio = 100,
+    Data1 = 101,
+    Data2 = 102,
+    XA21  = 103,
+    XA22  = 104,
+    Mixed = 105,
+}
+
+pub const CD_MINS: i32 = 74;
+pub const CD_SECS: i32 = 60;
+pub const CD_FRAMES: i32 = 75;
+pub const CD_SYNC_SIZE: i32 = 12;
+pub const CD_MSF_OFFSET: i32 = 150;
+pub const CD_CHUNK_SIZE: i32 = 24;
+pub const CD_NUM_OF_CHUNKS: i32 = 98;
+pub const CD_FRAMESIZE_SUB: i32 = 96;
+pub const CD_HEAD_SIZE: i32 = 4;
+pub const CD_SUBHEAD_SIZE: i32 = 8;
+pub const CD_EDC_SIZE: i32 = 4;
+pub const CD_ZERO_SIZE: i32 = 8;
+pub const CD_ECC_SIZE: i32 = 276;
+pub const CD_FRAMESIZE: i32 = 2048;
+pub const CD_FRAMESIZE_RAW: i32 = 2352;
+pub const CD_FRAMESIZE_RAWER: i32 = 2646;
+pub const CD_FRAMESIZE_RAW1: i32 = CD_FRAMESIZE_RAW - CD_SYNC_SIZE;
+pub const CD_FRAMESIZE_RAW0: i32 = CD_FRAMESIZE_RAW - CD_SYNC_SIZE - CD_HEAD_SIZE;
+
+pub const CD_XA_HEAD: i32 = CD_HEAD_SIZE + CD_SUBHEAD_SIZE;
+pub const CD_XA_TAIL: i32 = CD_EDC_SIZE + CD_ECC_SIZE;
+pub const CD_XA_SYNC_HEAD: i32 = CD_SYNC_SIZE + CD_XA_HEAD;
+
+#[repr(u8)]
+#[derive(FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressType {
+    Lba = 0x01,
+    Msf = 0x02,
+}
+
+#[derive(FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioStates {
+    Invalid = 0x00,
+    Play = 0x11,
+    Paused = 0x12,
+    Completed = 0x13,
+    Error = 0x14,
+    NoStatus = 0x15,
+}
+
+pub enum Capability {
+    CloseTray = 0x01,
+    OpenTray = 0x02,
+    Lock = 0x04,
+    SelectSpeed = 0x08,
+    SelectDisc = 0x10,
+    MultiSession = 0x20,
+    Mcn = 0x40,
+    MediaChanged = 0x80,
+    PlayAudio = 0x100,
+    Reset = 0x200,
+    DriveStatus = 0x800,
+    GenericPacket = 0x1000,
+    CdR = 0x2000,
+    CdRW = 0x4000,
+    Dvd = 0x8000,
+    DvdR = 0x10000,
+    DvdRam = 0x20000,
+    MODrive = 0x40000,
+    Mrw = 0x80000,
+    MrwW = 0x1000000,
+    Ram = 0x2000000,
+}
+
+impl Capability {
+    pub fn compare() {
+
+    }
 }
