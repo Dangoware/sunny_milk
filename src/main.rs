@@ -5,14 +5,15 @@ use std::io::Write;
 use std::os::fd::RawFd;
 use std::os::{fd::IntoRawFd, unix::fs::OpenOptionsExt};
 use std::fs::OpenOptions;
-use std::ptr::addr_of_mut;
+use std::process::exit;
+use std::ptr::{addr_of, addr_of_mut};
 
-use constants::{op_to_ioctl, AddressType, DiscStatus, Operation, Status};
+use constants::{op_to_ioctl, AddressType, DiscType, Operation, Status};
 use nix::errno::Errno;
-use nix::{ioctl_none_bad, ioctl_read_bad, ioctl_readwrite_bad, ioctl_write_int_bad, libc};
+use nix::{ioctl_none_bad, ioctl_read_bad, ioctl_readwrite_bad, ioctl_write_int_bad, ioctl_write_ptr_bad, libc};
 
 use num_traits::FromPrimitive as _;
-use structures::{Addr, AddrUnion, Msf, MsfLong, RawResult, ReadAudio, TocEntry, TocHeader, _TocEntry};
+use structures::{Addr, AddrUnion, Msf, MsfLong, RawResult, ReadAudio, SubChannel, TocEntry, TocHeader, _SubChannel, _TocEntry};
 use thiserror::Error;
 
 #[macro_use]
@@ -20,20 +21,58 @@ extern crate num_derive;
 
 fn main() {
     let mut cd_rom = CDRom::new().unwrap();
+    cd_rom.set_lock(true).unwrap();
 
-    let status = cd_rom.status().unwrap();
-    println!("Drive status: {:?}", status);
-    cd_rom.close().unwrap();
+    println!("Getting drive status...");
+    let mut status = cd_rom.status().unwrap();
 
-    println!("Disc status: {:?}", cd_rom.disc_type());
-
-    let header = cd_rom.toc_header().unwrap();
-    for i in header.first_track..header.last_track {
-        let entry = cd_rom.toc_entry(i);
-        println!("{:?}", entry.addr);
+    if status == Status::NoInfo {
+        println!("Cannot get disc status");
+        exit(1);
+    } else if status == Status::NoDisc {
+        println!("No disc inserted!");
+        exit(1);
     }
 
-    cd_rom.set_lock(false).unwrap();
+    while status != Status::DiscOK {
+        status = cd_rom.status().unwrap();
+        if status == Status::TrayOpen {
+            cd_rom.close().unwrap();
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    println!("Drive status:\t{:?}", status);
+
+    let disc_type = cd_rom.disc_type();
+    println!("Disc type:\t{:?}", disc_type.unwrap_or(DiscType::NoInfo));
+    if disc_type != Some(DiscType::Audio) {
+        println!("\nNot an audio CD! Will not continue.");
+        exit(0);
+    }
+
+    println!("Disc MCN: {}", cd_rom.mcn().unwrap_or_default());
+
+    let header = cd_rom.toc_header().unwrap();
+    println!("Disc contains {} tracks", header.last_track);
+
+    for i in header.first_track..header.last_track {
+        let entry = cd_rom.toc_entry(i, AddressType::Msf);
+
+        println!("Track {:>4} -------", entry.track);
+
+        match entry.addr {
+            Addr::Lba(a) => {
+                let msf = Msf::from_lba(a);
+                println!("\tMSF: {:02}:{:02}.{:02}\n\tLBA: {}", msf.minute, msf.second, msf.frame, a);
+            }
+            Addr::Msf(a) => {
+                let lba = a.to_lba();
+                println!("\tMSF: {:02}:{:02}.{:02}\n\tLBA: {}", a.minute, a.second, a.frame, lba);
+            }
+        }
+        println!();
+    }
 }
 
 fn rip_cd() {
@@ -113,6 +152,9 @@ pub enum CDRomError {
 
     #[error("the drive is in use by another user")]
     Busy,
+
+    #[error("the address specified was invalid")]
+    InvalidAddress,
 }
 
 ioctl_none_bad!(cdrom_stop, op_to_ioctl(Operation::Stop));
@@ -127,6 +169,8 @@ ioctl_readwrite_bad!(cdrom_read_raw, op_to_ioctl(Operation::ReadRaw), structures
 ioctl_read_bad!(cdrom_get_mcn, op_to_ioctl(Operation::GetMcn), [u8; 14]);
 ioctl_read_bad!(cdrom_read_toc_header, op_to_ioctl(Operation::ReadTocHeader), structures::TocHeader);
 ioctl_read_bad!(cdrom_read_toc_entry, op_to_ioctl(Operation::ReadTocEntry), structures::_TocEntry);
+ioctl_readwrite_bad!(cdrom_subchannel, op_to_ioctl(Operation::SubChannel), structures::_SubChannel);
+ioctl_read_bad!(cdrom_seek, op_to_ioctl(Operation::Seek), structures::MsfLong);
 
 impl CDRom {
     /// Creates a new interface to a system CD-ROM drive.
@@ -152,12 +196,12 @@ impl CDRom {
     }
 
     /// Get the type of disc currently in the drive
-    pub fn disc_type(&mut self) -> Option<DiscStatus> {
+    pub fn disc_type(&mut self) -> Option<DiscType> {
         let status = unsafe {
             cdrom_disc_status(self.drive_fd).ok()?
         };
 
-        DiscStatus::from_i32(status)
+        DiscType::from_i32(status)
     }
 
     /// Get the Media Catalog Number of the current disc.
@@ -186,27 +230,26 @@ impl CDRom {
         Ok(header)
     }
 
-    pub fn toc_entry(&mut self, index: u8) -> TocEntry {
-        let mut header = _TocEntry::default();
-        header.track = index;
-        header.format = AddressType::Lba as u8;
+    pub fn toc_entry(&mut self, index: u8, address_type: AddressType) -> TocEntry {
+        let mut entry = _TocEntry::default();
+        entry.track = index;
+        entry.format = address_type as u8;
 
         unsafe {
-            cdrom_read_toc_entry(self.drive_fd, addr_of_mut!(header)).unwrap();
+            cdrom_read_toc_entry(self.drive_fd, addr_of_mut!(entry)).unwrap();
         }
 
         let entry = TocEntry {
-            track: header.track,
-            adr: header.adr_ctrl >> 4,
-            ctrl: header.adr_ctrl & 0x0F,
+            track: entry.track,
+            adr: entry.adr_ctrl >> 4,
+            ctrl: entry.adr_ctrl & 0x0F,
             addr: unsafe {
-                match header.format {
-                    d if d == AddressType::Lba as u8 => Addr::Lba(header.addr.lba),
-                    d if d == AddressType::Msf as u8 => Addr::Msf(header.addr.msf),
+                match entry.format {
+                    d if d == AddressType::Lba as u8 => Addr::Lba(entry.addr.lba),
+                    d if d == AddressType::Msf as u8 => Addr::Msf(entry.addr.msf),
                     _ => panic!("Impossible value returned!")
                 }
             },
-            datamode: header.datamode,
         };
 
         entry
@@ -253,9 +296,40 @@ impl CDRom {
         }
     }
 
+    pub fn subchannel(&mut self, track: u8) -> Result<SubChannel, CDRomError> {
+        let mut argument = _SubChannel::default();
+        argument.trk = track;
+
+        unsafe {
+            cdrom_subchannel(self.drive_fd, addr_of_mut!(argument)).unwrap();
+        }
+
+        Ok(SubChannel {
+            audiostatus: argument.audiostatus,
+            adr: argument.adr_ctrl >> 4,
+            ctrl: argument.adr_ctrl & 0x0F,
+            trk: argument.trk,
+            ind: argument.ind,
+            absaddr: unsafe {
+                match argument.format {
+                    d if d == AddressType::Lba as u8 => Addr::Lba(argument.absaddr.lba),
+                    d if d == AddressType::Msf as u8 => Addr::Msf(argument.absaddr.msf),
+                    _ => panic!("Impossible value returned!")
+                }
+            },
+            reladdr: unsafe {
+                match argument.format {
+                    d if d == AddressType::Lba as u8 => Addr::Lba(argument.reladdr.lba),
+                    d if d == AddressType::Msf as u8 => Addr::Msf(argument.reladdr.msf),
+                    _ => panic!("Impossible value returned!")
+                }
+            }
+        })
+    }
+
     /// Read audio from the CD.
     ///
-    /// The buffer will be constructed automatically.
+    /// This method is a convenience method around [`CDRom::read_audio_into`].
     pub fn read_audio(&mut self, address: Addr, frames: usize) -> Result<Vec<i16>, CDRomError> {
         let mut buf = vec![0i16; (frames * constants::CD_FRAMESIZE_RAW as usize) / 2];
 
@@ -306,31 +380,32 @@ impl CDRom {
         Ok(())
     }
 
-    pub fn read_raw(&mut self, address: Msf) -> Box<[u8; 2352]> {
-        // TODO: Make this take LBA values too
-        // MSF values are converted to LBA values via this formula:
-        // lba = (((m * CD_SECS) + s) * CD_FRAMES + f) - CD_MSF_OFFSET;
-        // <https://docs.kernel.org/userspace-api/ioctl/cdrom.html>
+    pub fn read_raw_into(&mut self, address: Addr, buf: &mut [u8]) -> Result<(), CDRomError> {
+        let address = match address {
+            Addr::Lba(a) => Msf::from_lba(a),
+            Addr::Msf(msf) => msf,
+        };
 
-        if address.minute == 0 && address.second < 2 {
-            panic!("MSF second cannot be less than 2!")
+        if address.invalid() {
+            return Err(CDRomError::InvalidAddress)
         }
 
         let mut argument = RawResult {
-            cdrom_msf: MsfLong {
-                min0: address.minute,
-                sec0: address.second,
-                frame0: address.frame,
-                ..Default::default()
-            }
+            buffer: buf.as_mut_ptr(),
         };
 
-        let result = unsafe {
+        // Set the union value to the MSF values
+        argument.cdrom_msf = MsfLong {
+            min0: address.minute,
+            sec0: address.second,
+            frame0: address.frame,
+            ..Default::default()
+        };
+
+        unsafe {
             cdrom_read_raw(self.drive_fd, addr_of_mut!(argument)).unwrap();
-
-            argument.buffer
         };
 
-        Box::new(result)
+        Ok(())
     }
 }

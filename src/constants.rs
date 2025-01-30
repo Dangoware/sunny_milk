@@ -159,7 +159,7 @@ pub enum Status {
 /// Disc status possibilities returned by CDROM_DISC_STATUS ioctl
 #[derive(FromPrimitive, ToPrimitive)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiscStatus {
+pub enum DiscType {
     NoInfo = 0,
     Audio = 100,
     Data1 = 101,
@@ -235,8 +235,6 @@ pub enum Capability {
     Ram = 0x2000000,
 }
 
-impl Capability {
-    pub fn compare() {
+pub enum GenericPacketCommand {
 
-    }
 }

@@ -1,6 +1,6 @@
 use std::{ffi::c_int, mem};
 
-use crate::constants::AddressType;
+use crate::constants::{self, AddressType};
 
 /// Address in MSF format
 #[repr(C)]
@@ -9,6 +9,29 @@ pub struct Msf {
     pub minute: u8,
     pub second: u8,
     pub frame: u8,
+}
+
+impl Msf {
+    pub fn to_lba(&self) -> i32 {
+        (((self.minute as i32 * constants::CD_SECS) + self.second as i32) * constants::CD_FRAMES + self.frame as i32) - constants::CD_MSF_OFFSET
+    }
+
+    pub fn from_lba(lba: i32) -> Self {
+        let offset_a = lba + constants::CD_MSF_OFFSET;
+        Msf {
+            minute: ((offset_a / constants::CD_FRAMES) / 60) as u8,
+            second: ((offset_a / constants::CD_FRAMES) % 60) as u8,
+            frame: (offset_a % 75) as u8,
+        }
+    }
+
+    pub fn invalid(&self) -> bool {
+        if self.minute == 0 && self.second < 2 {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Address in either MSF or logical format
@@ -23,6 +46,22 @@ pub union AddrUnion {
 pub enum Addr {
     Lba(i32),
     Msf(Msf),
+}
+
+impl Addr {
+    pub fn into_msf(self) -> Msf {
+        match self {
+            Addr::Lba(a) => Msf::from_lba(a),
+            Addr::Msf(msf) => msf,
+        }
+    }
+
+    pub fn into_lba(self) -> i32 {
+        match self {
+            Addr::Lba(a) => a,
+            Addr::Msf(msf) => msf.to_lba(),
+        }
+    }
 }
 
 /// This struct is used by [`crate::constants::PLAY_MSF`]
@@ -46,7 +85,7 @@ pub struct MsfLong {
 #[repr(C)]
 pub union RawResult {
     pub cdrom_msf: MsfLong,
-    pub buffer: [u8; 2352],
+    pub buffer: *mut u8,
 }
 
 /// This struct is used by [`crate::constants::PLAY_TRACK_INDEX`]
@@ -95,13 +134,12 @@ impl Default for _TocEntry {
 }
 
 // Actually public version of [`_TocEntry`].
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct TocEntry {
     pub track: u8,
     pub adr: u8,
     pub ctrl: u8,
     pub addr: Addr,
-    pub datamode: u8,
 }
 
 struct VolCtl {
@@ -121,10 +159,41 @@ pub struct ReadAudio {
     pub buf: *mut i16,
 }
 
-/// This struct is used with the CDROM_GET_MCN ioctl.
-/// Very few audio discs actually have Universal Product Code information,
-/// which should just be the Medium Catalog Number on the box.  Also note
-/// that the way the codeis written on CD is _not_ uniform across all discs!
-struct Mcn {
-    medium_catalog_number: [u8; 14]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct _SubChannel {
+    pub format: u8,
+    pub audiostatus: u8,
+    pub adr_ctrl: u8,
+    pub trk: u8,
+    pub ind: u8,
+    pub absaddr: AddrUnion,
+    pub reladdr: AddrUnion,
+}
+
+impl Default for _SubChannel {
+    fn default() -> Self {
+        unsafe {
+            Self {
+                format: AddressType::Msf as u8,
+                audiostatus: 0,
+                adr_ctrl: 0,
+                trk: 0,
+                ind: 0,
+                absaddr: mem::zeroed(),
+                reladdr: mem::zeroed(),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SubChannel {
+    pub audiostatus: u8,
+    pub adr: u8,
+    pub ctrl: u8,
+    pub trk: u8,
+    pub ind: u8,
+    pub absaddr: Addr,
+    pub reladdr: Addr,
 }
