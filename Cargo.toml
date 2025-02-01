@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hound = "3.5.1"
 md5 = "0.7.0"
 nix = { version = "0.29.0", features = ["ioctl"] }
 num-derive = "0.4.2"

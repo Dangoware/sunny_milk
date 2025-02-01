@@ -2,6 +2,7 @@ mod constants;
 mod structures;
 
 use std::io::Write;
+use std::mem;
 use std::os::fd::RawFd;
 use std::os::{fd::IntoRawFd, unix::fs::OpenOptionsExt};
 use std::fs::OpenOptions;
@@ -51,7 +52,10 @@ fn main() {
         exit(0);
     }
 
-    println!("Disc MCN: {}", cd_rom.mcn().unwrap_or_default());
+    let mcn = cd_rom.mcn().unwrap_or_default();
+    if mcn != "0000000000000" {
+        println!("Disc MCN: {}", mcn);
+    }
 
     let header = cd_rom.toc_header().unwrap();
     println!("Disc contains {} tracks", header.last_track);
@@ -73,6 +77,8 @@ fn main() {
         }
         println!();
     }
+
+    //rip_cd();
 }
 
 fn rip_cd() {
@@ -81,51 +87,35 @@ fn rip_cd() {
     println!("Drive status: {:?}", cd_rom.status().unwrap());
     println!("Disc status: {:?}", cd_rom.disc_type().unwrap());
 
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: 44100,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create("cd_audio.wav", spec).unwrap();
-    let mut buf = vec![0i16; (75 * constants::CD_FRAMESIZE_RAW as usize) / 2];
+    let mut raw_output = std::fs::File::create("raw_cd").unwrap();
+    let mut buffer = vec![32u8; constants::CD_FRAMESIZE_RAW as usize];
 
-    // Checksum calculator
-    let mut context = md5::Context::new();
+    let mut frame = 0i32;
+    loop {
+        let frame_real = frame % 75;
+        let second: i32 = ((frame / 75)) + 2;
+        let minute = (second / 60) as u8;
 
-    println!("Begin ripping\n");
-    for i in 0..4500u32 {
-        let minute = ((i + 2) / 60) as u8;
-        let second = ((i + 2) % 60) as u8;
-        print!("Reading {minute:02}:{second:02}\r");
-        std::io::stdout().flush().unwrap();
+        println!("{:02}:{:02}:{:02} - {}", minute, second % 60, frame_real as u8, frame);
 
-        match cd_rom.read_audio_into(
-            Addr::Msf(Msf { minute, second, frame: 0 }),
-            constants::CD_FRAMES as usize,
-            &mut buf,
+        match cd_rom.read_raw_into(
+            Addr::Msf(Msf { minute, second: (second % 60) as u8, frame: frame_real as u8 }),
+            &mut buffer,
         ) {
             Ok(s) => s,
-            Err(_) => break,
+            Err(e) => {
+                dbg!(e);
+                continue;
+            },
         };
 
-        let audio_u8: Vec<u8> = buf.iter().flat_map(|s| s.to_le_bytes()).collect();
-        context.consume(audio_u8);
+        let subchannel = cd_rom.subchannel().unwrap();
+        //dbg!(subchannel);
 
-        let mut writer = writer.get_i16_writer(buf.len() as u32);
-        for sample in &buf {
-            writer.write_sample(*sample);
-        }
-        writer.flush().unwrap();
+        raw_output.write_all(buffer.as_slice()).unwrap();
+
+        frame += 1;
     }
-
-    let sum = context.compute();
-    let mut string_sum = String::new();
-    sum.iter().for_each(|b| string_sum.push_str(format!("{:0x}", b).as_str()));
-    println!("\nFinished!\n\n\tChecksum: {}", string_sum);
-
-    writer.flush().unwrap();
-    writer.finalize().unwrap();
 }
 
 /// Access to a CD-ROM drive on the system.
@@ -155,6 +145,9 @@ pub enum CDRomError {
 
     #[error("the address specified was invalid")]
     InvalidAddress,
+
+    #[error("the buffer size was too small; needed at least {0} bytes, got {1} bytes")]
+    InvalidBufferSize(usize, usize),
 }
 
 ioctl_none_bad!(cdrom_stop, op_to_ioctl(Operation::Stop));
@@ -165,7 +158,7 @@ ioctl_none_bad!(cdrom_close_tray, op_to_ioctl(Operation::CloseTray));
 ioctl_none_bad!(cdrom_status, op_to_ioctl(Operation::DriveStatus));
 ioctl_none_bad!(cdrom_disc_status, op_to_ioctl(Operation::DiscStatus));
 ioctl_readwrite_bad!(cdrom_read_audio, op_to_ioctl(Operation::ReadAudio), structures::ReadAudio);
-ioctl_readwrite_bad!(cdrom_read_raw, op_to_ioctl(Operation::ReadRaw), structures::RawResult);
+ioctl_readwrite_bad!(cdrom_read_raw, op_to_ioctl(Operation::ReadRaw), [u8]);
 ioctl_read_bad!(cdrom_get_mcn, op_to_ioctl(Operation::GetMcn), [u8; 14]);
 ioctl_read_bad!(cdrom_read_toc_header, op_to_ioctl(Operation::ReadTocHeader), structures::TocHeader);
 ioctl_read_bad!(cdrom_read_toc_entry, op_to_ioctl(Operation::ReadTocEntry), structures::_TocEntry);
@@ -296,9 +289,8 @@ impl CDRom {
         }
     }
 
-    pub fn subchannel(&mut self, track: u8) -> Result<SubChannel, CDRomError> {
+    pub fn subchannel(&mut self) -> Result<SubChannel, CDRomError> {
         let mut argument = _SubChannel::default();
-        argument.trk = track;
 
         unsafe {
             cdrom_subchannel(self.drive_fd, addr_of_mut!(argument)).unwrap();
@@ -380,7 +372,11 @@ impl CDRom {
         Ok(())
     }
 
-    pub fn read_raw_into(&mut self, address: Addr, buf: &mut [u8]) -> Result<(), CDRomError> {
+    pub fn read_raw_into(
+        &mut self,
+        address: Addr,
+        buf: &mut [u8]
+    ) -> Result<(), CDRomError> {
         let address = match address {
             Addr::Lba(a) => Msf::from_lba(a),
             Addr::Msf(msf) => msf,
@@ -390,20 +386,16 @@ impl CDRom {
             return Err(CDRomError::InvalidAddress)
         }
 
-        let mut argument = RawResult {
-            buffer: buf.as_mut_ptr(),
-        };
+        if buf.len() < constants::CD_FRAMESIZE_RAW as usize {
+            return Err(CDRomError::InvalidBufferSize(constants::CD_FRAMESIZE_RAW as usize, buf.len()))
+        }
 
-        // Set the union value to the MSF values
-        argument.cdrom_msf = MsfLong {
-            min0: address.minute,
-            sec0: address.second,
-            frame0: address.frame,
-            ..Default::default()
-        };
+        buf[0] = address.minute;
+        buf[1] = address.second;
+        buf[2] = address.frame;
 
         unsafe {
-            cdrom_read_raw(self.drive_fd, addr_of_mut!(argument)).unwrap();
+            cdrom_read_raw(self.drive_fd, addr_of_mut!(*buf)).unwrap();
         };
 
         Ok(())

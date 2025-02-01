@@ -85,7 +85,7 @@ pub struct MsfLong {
 #[repr(C)]
 pub union RawResult {
     pub cdrom_msf: MsfLong,
-    pub buffer: *mut u8,
+    pub buffer: [u8; constants::CD_FRAMESIZE_RAW as usize],
 }
 
 /// This struct is used by [`crate::constants::PLAY_TRACK_INDEX`]
