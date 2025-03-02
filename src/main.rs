@@ -1,20 +1,13 @@
-mod constants;
-mod structures;
-mod platform;
-
 use std::io::Write;
 use std::process::exit;
 
-use constants::{AddressType, DiscType, Status};
-use structures::{Addr, Msf};
-
-
-#[macro_use]
-extern crate num_derive;
+use sunny_milk::constants::{AddressType, DiscType, Status, CD_FRAMESIZE_RAW};
+use sunny_milk::structures::{Addr, Msf};
+use sunny_milk::{CDRom, CDRomTrait};
 
 fn main() {
     let mut cd_rom = CDRom::new().unwrap();
-    cd_rom.set_lock(true).unwrap();
+    // cd_rom.set_lock(true).unwrap();
 
     println!("Getting drive status...");
     let mut status = cd_rom.status().unwrap();
@@ -80,7 +73,7 @@ fn rip_cd() {
     println!("Disc status: {:?}", cd_rom.disc_type().unwrap());
 
     let mut raw_output = std::fs::File::create("raw_cd").unwrap();
-    let mut buffer = vec![32u8; constants::CD_FRAMESIZE_RAW as usize];
+    let mut buffer = vec![32u8; CD_FRAMESIZE_RAW as usize];
 
     let mut frame = 0i32;
     loop {

@@ -3,8 +3,6 @@
 
 use num_traits::ToPrimitive;
 
-pub const EDRIVE_CANT_DO_THIS: i32 = nix::errno::Errno::EOPNOTSUPP as i32;
-
 /// CDROM ioctl byte, from <linux/cdrom.h>
 pub const IOC_BYTE: u8 = 0x53;
 

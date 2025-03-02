@@ -13,38 +13,12 @@ use num_traits::FromPrimitive as _;
 
 use crate::constants::{op_to_ioctl, AddressType, DiscType, Operation, Status, CD_FRAMESIZE_RAW};
 use crate::structures::{Addr, AddrUnion, Msf, MsfLong, ReadAudio, SubChannel, TocEntry, TocHeader, _SubChannel, _TocEntry};
-use thiserror::Error;
+use crate::{CDRomError, CDRomTrait};
 
+pub const EDRIVE_CANT_DO_THIS: i32 = nix::errno::Errno::EOPNOTSUPP as i32;
 
-pub struct CDRom {
+pub struct CDRomLinux {
     drive_fd: RawFd,
-}
-
-#[derive(Error, Debug, Clone)]
-pub enum CDRomError {
-    #[error("internal system error")]
-    Errno(#[from] nix::errno::Errno),
-
-    #[error("no disc in drive to read")]
-    NoDisc,
-
-    #[error("the CD does not contain cd-audio")]
-    NotAudioCD,
-
-    #[error("the drive's door is locked for some reason")]
-    DoorLocked,
-
-    #[error("this drive does not support the function")]
-    Unsupported,
-
-    #[error("the drive is in use by another user")]
-    Busy,
-
-    #[error("the address specified was invalid")]
-    InvalidAddress,
-
-    #[error("the buffer size was too small; needed at least {0} bytes, got {1} bytes")]
-    InvalidBufferSize(usize, usize),
 }
 
 ioctl_none_bad!(cdrom_stop, op_to_ioctl(Operation::Stop));
@@ -62,7 +36,7 @@ ioctl_read_bad!(cdrom_read_toc_entry, op_to_ioctl(Operation::ReadTocEntry), _Toc
 ioctl_readwrite_bad!(cdrom_subchannel, op_to_ioctl(Operation::SubChannel), _SubChannel);
 ioctl_read_bad!(cdrom_seek, op_to_ioctl(Operation::Seek), MsfLong);
 
-impl CDRom {
+impl CDRomLinux {
     /// Creates a new interface to a system CD-ROM drive.
     pub fn new() -> Option<Self> {
         let drive_file = OpenOptions::new()
@@ -75,9 +49,10 @@ impl CDRom {
             drive_fd: drive_file.into_raw_fd(),
         })
     }
-
+}
+impl CDRomTrait for CDRomLinux {
     /// Get the currently reported status of the drive.
-    pub fn status(&mut self) -> Option<Status> {
+    fn status(&mut self) -> Option<Status> {
         let status = unsafe {
             cdrom_status(self.drive_fd).unwrap()
         };
@@ -86,7 +61,7 @@ impl CDRom {
     }
 
     /// Get the type of disc currently in the drive
-    pub fn disc_type(&mut self) -> Option<DiscType> {
+    fn disc_type(&mut self) -> Option<DiscType> {
         let status = unsafe {
             cdrom_disc_status(self.drive_fd).ok()?
         };
@@ -97,7 +72,7 @@ impl CDRom {
     /// Get the Media Catalog Number of the current disc.
     ///
     /// Many discs do not contain this information.
-    pub fn mcn(&mut self) -> Option<String> {
+    fn mcn(&mut self) -> Option<String> {
         let mut buffer = [0u8; 14];
 
         unsafe {
@@ -108,7 +83,7 @@ impl CDRom {
         Some(string)
     }
 
-    pub fn toc_header(&mut self) -> Result<TocHeader, CDRomError> {
+    fn toc_header(&mut self) -> Result<TocHeader, CDRomError> {
         let mut header = TocHeader::default();
 
         if unsafe {
@@ -120,7 +95,7 @@ impl CDRom {
         Ok(header)
     }
 
-    pub fn toc_entry(&mut self, index: u8, address_type: AddressType) -> TocEntry {
+    fn toc_entry(&mut self, index: u8, address_type: AddressType) -> TocEntry {
         let mut entry = _TocEntry::default();
         entry.track = index;
         entry.format = address_type as u8;
@@ -145,7 +120,7 @@ impl CDRom {
         entry
     }
 
-    pub fn set_lock(&mut self, locked: bool) -> Result<(), CDRomError> {
+    fn set_lock(&mut self, locked: bool) -> Result<(), CDRomError> {
         let result = match unsafe {
             cdrom_lock_door(self.drive_fd, locked as i32)
         } {
@@ -162,7 +137,7 @@ impl CDRom {
         }
     }
 
-    pub fn eject(&mut self) -> Result<(), CDRomError> {
+    fn eject(&mut self) -> Result<(), CDRomError> {
         let status = unsafe {
             cdrom_eject(self.drive_fd).unwrap()
         };
@@ -174,7 +149,7 @@ impl CDRom {
         Ok(())
     }
 
-    pub fn close(&mut self) -> Result<(), CDRomError> {
+    fn close(&mut self) -> Result<(), CDRomError> {
         let status = unsafe {
             cdrom_close_tray(self.drive_fd).unwrap()
         };
@@ -186,7 +161,7 @@ impl CDRom {
         }
     }
 
-    pub fn subchannel(&mut self) -> Result<SubChannel, CDRomError> {
+    fn subchannel(&mut self) -> Result<SubChannel, CDRomError> {
         let mut argument = _SubChannel::default();
 
         unsafe {
@@ -218,8 +193,8 @@ impl CDRom {
 
     /// Read audio from the CD.
     ///
-    /// This method is a convenience method around [`CDRom::read_audio_into`].
-    pub fn read_audio(&mut self, address: Addr, frames: usize) -> Result<Vec<i16>, CDRomError> {
+    /// This method is a convenience method around [`CDRomLinux::read_audio_into`].
+    fn read_audio(&mut self, address: Addr, frames: usize) -> Result<Vec<i16>, CDRomError> {
         let mut buf = vec![0i16; (frames * CD_FRAMESIZE_RAW as usize) / 2];
 
         self.read_audio_into(address, frames, &mut buf)?;
@@ -231,7 +206,7 @@ impl CDRom {
     ///
     /// The buffer must be large enough to hold the audio for all the frames you want to read.
     /// Since the values are [`i16`]s, the equation for the buffer size is `(n_frames * 2352) / 2`
-    pub fn read_audio_into(&mut self, address: Addr, frames: usize, buf: &mut [i16]) -> Result<(), CDRomError> {
+    fn read_audio_into(&mut self, address: Addr, frames: usize, buf: &mut [i16]) -> Result<(), CDRomError> {
         let (addr, addr_format) = match address {
             Addr::Lba(lba) => (AddrUnion { lba }, AddressType::Lba),
             Addr::Msf(msf) => {
@@ -269,7 +244,7 @@ impl CDRom {
         Ok(())
     }
 
-    pub fn read_raw_into(
+    fn read_raw_into(
         &mut self,
         address: Addr,
         buf: &mut [u8]
